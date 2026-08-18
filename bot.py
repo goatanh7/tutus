@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 
-BOT_TOKEN = "8789484794:AAG9KVAG65_EF4SJmPl7lsWVToF5Rfme4dU"
+BOT_TOKEN = "8789484794:AAFhCa9C2I8GfzVpFkzQ2wp1__RPSXj6NsM"
 DOWNLOAD_DIR = "./downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
