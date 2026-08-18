@@ -20,7 +20,7 @@ async def download_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Đang tải...")
 
     ydl_opts = {
-    "format": "bestaudio",
+    "format": "bestaudio/best/bestvideo+bestaudio",
     "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
     "postprocessors": [{
         "key": "FFmpegExtractAudio",
@@ -31,12 +31,16 @@ async def download_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "no_warnings": True,
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web"],
+            "player_client": ["mweb", "tv_embedded", "web"],
         }
     },
     "http_headers": {
-        "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xhtml;q=0.9,*/*;q=0.8",
     },
+    "geo_bypass": True,
+    "nocheckcertificate": True,
     }
 
     try:
