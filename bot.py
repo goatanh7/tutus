@@ -1,22 +1,12 @@
 import os
 import re
-import httpx
 import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import yt_dlp
 
 BOT_TOKEN = "8789484794:AAFhCa9C2I8GfzVpFkzQ2wp1__RPSXj6NsM"
 DOWNLOAD_DIR = "./downloads"
-
-PIPED_INSTANCES = [
-    "https://pipedapi.kavin.rocks",
-    "https://piped-api.privacy.com.de",
-    "https://api.piped.projectsegfau.lt",
-    "https://pipedapi.drgns.space",
-    "https://pipedapi.darkness.services",
-    "https://piped-api.codespace.cz",
-    "https://pipedapi.in.projectsegfau.lt",
-]
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -26,7 +16,6 @@ def extract_video_id(url: str) -> str | None:
         r"youtu\.be/([a-zA-Z0-9_-]{11})",
         r"youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})",
         r"youtube\.com/shorts/([a-zA-Z0-9_-]{11})",
-        r"youtube\.com/embed/([a-zA-Z0-9_-]{11})",
     ]
     for p in patterns:
         m = re.search(p, url)
@@ -35,110 +24,87 @@ def extract_video_id(url: str) -> str | None:
     return None
 
 
-async def get_audio_stream(video_id: str) -> tuple[str, str] | None:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; Bot/1.0)",
-        "Accept": "application/json",
+def download_audio_sync(url: str, output_dir: str) -> tuple[str, str] | None:
+    """Download audio tanpa FFmpeg — chọn format audio native."""
+    ydl_opts = {
+        # Ưu tiên m4a (không cần convert), fallback webm
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+        "outtmpl": os.path.join(output_dir, "%(id)s.%(ext)s"),
+        # KHÔNG có postprocessors — không cần FFmpeg
+        "quiet": False,
+        "no_warnings": False,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+                "player_skip": ["configs"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+        },
+        "geo_bypass": True,
+        "nocheckcertificate": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "socket_timeout": 30,
     }
-    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
-        for instance in PIPED_INSTANCES:
-            try:
-                r = await client.get(f"{instance}/streams/{video_id}")
-                if r.status_code != 200:
-                    print(f"[SKIP] {instance} → {r.status_code}")
-                    continue
 
-                data = r.json()
-                if "error" in data:
-                    print(f"[SKIP] {instance} → error: {data['error']}")
-                    continue
-
-                title = data.get("title", "audio")
-                audio_streams = data.get("audioStreams", [])
-                if not audio_streams:
-                    continue
-
-                # Ưu tiên m4a (mp4a), fallback webm/opus
-                best = None
-                for s in audio_streams:
-                    mime = s.get("mimeType", "")
-                    if "mp4" in mime or "m4a" in mime:
-                        if best is None or s.get("bitrate", 0) > best.get("bitrate", 0):
-                            best = s
-                if not best:
-                    best = max(audio_streams, key=lambda x: x.get("bitrate", 0))
-
-                print(f"[OK] {instance} → {title}")
-                return best["url"], title
-
-            except Exception as e:
-                print(f"[ERR] {instance} → {e}")
-                continue
-    return None
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        video_id = info.get("id")
+        title = info.get("title", "audio")
+        ext = info.get("ext", "webm")
+        filename = os.path.join(output_dir, f"{video_id}.{ext}")
+        return filename, title
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎵 Gửi link YouTube, mình download thành audio!\n"
-        "Hỗ trợ: youtube.com/watch, youtu.be, youtube.com/shorts"
+        "Hỗ trợ: youtube.com, youtu.be, youtube.com/shorts"
     )
 
 
 async def download_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    video_id = extract_video_id(url)
 
-    if not video_id:
+    if not extract_video_id(url):
         await update.message.reply_text("❌ Link YouTube không hợp lệ.")
         return
 
-    msg = await update.message.reply_text("⏳ Đang tìm stream...")
+    msg = await update.message.reply_text("⏳ Đang tải...")
 
-    result = await get_audio_stream(video_id)
-    if not result:
-        await msg.edit_text(
-            "❌ Không lấy được stream từ tất cả servers.\n"
-            "Thử lại sau vài phút hoặc dùng link khác."
-        )
-        return
-
-    stream_url, title = result
-    await msg.edit_text(f"⬇️ Đang tải: *{title}*", parse_mode="Markdown")
-
-    ext = "m4a"
-    if "webm" in stream_url or "opus" in stream_url:
-        ext = "ogg"
-
-    filepath = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
-
+    filepath = None
     try:
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            async with client.stream("GET", stream_url) as r:
-                r.raise_for_status()
-                with open(filepath, "wb") as f:
-                    async for chunk in r.aiter_bytes(chunk_size=16384):
-                        f.write(chunk)
+        loop = asyncio.get_event_loop()
+        filepath, title = await loop.run_in_executor(
+            None, download_audio_sync, url, DOWNLOAD_DIR
+        )
+
+        if not os.path.exists(filepath):
+            await msg.edit_text("❌ Tải xong nhưng không tìm thấy file.")
+            return
 
         file_size = os.path.getsize(filepath)
-        if file_size > 50 * 1024 * 1024:  # 50MB limit Telegram
-            await msg.edit_text("❌ File quá lớn (>50MB), Telegram không cho upload.")
+        if file_size > 50 * 1024 * 1024:
+            await msg.edit_text("❌ File quá lớn (>50MB).")
             return
 
         await msg.edit_text(f"✅ Xong: *{title}*", parse_mode="Markdown")
 
-        with open(filepath, "rb") as audio_file:
+        with open(filepath, "rb") as f:
             await update.message.reply_audio(
-                audio=audio_file,
+                audio=f,
                 title=title,
                 performer="YouTube",
-                filename=f"{title}.{ext}",
             )
 
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi tải file: `{e}`", parse_mode="Markdown")
+        print(f"[ERR] {e}")
+        await msg.edit_text(f"❌ Lỗi: `{e}`", parse_mode="Markdown")
 
     finally:
-        if os.path.exists(filepath):
+        if filepath and os.path.exists(filepath):
             os.remove(filepath)
 
 
